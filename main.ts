@@ -1,9 +1,11 @@
 // A working token-radar-01 entry (Node 22, standard library only).
 //
 // The program reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), scores
-// every rankable pre-token protocol with the model in lib/model.ts, writes the ranked board to
-// /output/board.json, copies this repository's dashboard/ and screenshots/ to /output, and writes
-// /output/dossier.json with the vendored make.fun library.
+// every rankable pre-token protocol with the radar-3 model in lib/model.ts, writes the ranked
+// board to /output/board.json, copies this repository's dashboard/ and screenshots/ to /output,
+// and writes /output/dossier.json with the vendored make.fun library. After writing, it reads
+// board.json back and refuses to finish unless the row count on disk is the row count scored,
+// so a truncated write never passes as a finished run.
 //
 // The dashboard is a static page, no framework and no network: dashboard/index.html, dashboard/app.css
 // and dashboard/app.js read /output/data.js, which this program writes from the same board.
@@ -82,6 +84,13 @@ for (const name of shots) {
 
 // The dossier is written last: the scorer rebuilds it from this /output and compares bytes.
 writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: { max_files: 400, max_bytes: 4_194_304 } }));
+
+// Read the board back: a finished run is one whose board on disk is the board scored.
+const written = JSON.parse(readFileSync(join(out, 'board.json'), 'utf8')) as { rows?: unknown[] };
+if (!Array.isArray(written.rows) || written.rows.length !== board.length) {
+  process.stderr.write(`token radar: board.json on disk holds ${Array.isArray(written.rows) ? written.rows.length : 'no'} rows, expected ${board.length}\n`);
+  process.exit(1);
+}
 
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +

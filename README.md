@@ -11,32 +11,37 @@ the DeFiLlama protocol index and ranks every pre-token protocol it records by an
 implied value, then builds a static dashboard a reader can use to find and farm
 the next token launch.
 
-## The model (radar-2)
+## The model (radar-3)
 
 One function scores every row, from the snapshot's own figures only:
 
 ```
-implied = round( tvl_usd x 0.25
-  x (1 + clamp(change_7d, -60, 120) / 100 x 0.5)
-  x (0.6 + min(age_days, 1095) / 1095 x 0.4)
-  x (1 + 0.04 x min(chains, 10)) )
+effective = tvl_usd / (1 + tvl_usd / 1,000,000,000)
+implied = round( effective x 0.25
+  x (1 + clamp(change_7d, -80, 150) / 100 x 0.9)
+  x (0.5 + min(age_days, 1095) / 1095 x 0.5)
+  x (1 + 0.06 x min(chains, 10)) )
 ```
 
-- **TVL** anchors the value: a protocol holding more value is worth more if it
-  ever issues a token.
-- **Seven-day growth** is momentum, clamped so one wild week cannot decide the
-  board.
+- **TVL** is compressed by a $1B soft cap: a protocol holding ten times more
+  value is worth about twice as much from size alone, and past $1B extra size
+  adds almost nothing — so the top of the board is decided by the other three
+  factors, not by who is biggest.
+- **Seven-day growth** is momentum, and now moves the value the most: from
+  0.28x for a week down 80% to 2.35x for a week up 150%, clamped so one wild
+  week cannot decide the board on its own.
 - **Age** is how long the protocol has run with no token; an unlisted age uses
   365 days.
-- **Chain count** is distribution: each chain up to 10 adds 4%.
+- **Chain count** is distribution: each chain up to 10 adds 6%.
 
 No protocol name is special-cased. The board covers the whole watchlist (the
 floor) plus every other rankable pre-token protocol in the snapshot — 198 rows
 on the dev snapshot. Protocols whose token already trades are set aside and
 shown with their market caps, never mixed into the ranking.
 
-Each row also carries a six-step farm plan derived from the protocol's own
-category, chains, TVL and age, with a cost and a time per step.
+Each row also carries an eight- or nine-step farm plan derived from the protocol's own
+category, chains, TVL and age, with a cost and a time per step — including a
+second-chain step for multi-chain protocols, a risk check, and a farm log.
 
 ## Run it
 
