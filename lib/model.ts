@@ -1,4 +1,4 @@
-// The token radar's model (radar-2): one snapshot of the protocol universe in, one ranked board out.
+// The token radar's model (radar-3): one snapshot of the protocol universe in, one ranked board out.
 //
 // The board ranks every pre-token protocol the snapshot records that is not an exchange, a
 // versioned pool, or a wrapped, staked or bridged product of a token that already trades. The
@@ -10,19 +10,25 @@
 //
 // Implied value follows only from the snapshot's own figures, one function for every row:
 //
-//   base       = tvl_usd x BASE_MULTIPLE
-//   growth     = clamp(change_7d, -60, 120) per cent
+//   effective  = tvl_usd / (1 + tvl_usd / TVL_SOFT_CAP)          (TVL_SOFT_CAP = $1,000,000,000)
+//   base       = effective x BASE_MULTIPLE
+//   growth     = clamp(change_7d, -80, 150) per cent
 //   growthMult = 1 + (growth / 100) x GROWTH_WEIGHT
-//   maturity   = 0.6 + min(age_days, 1095) / 1095 x 0.4   (age_days unknown: 365)
-//   chains     = 1 + 0.04 x min(chain_count, 10)
+//   maturity   = 0.5 + min(age_days, 1095) / 1095 x 0.5         (age_days unknown: 365)
+//   chains     = 1 + 0.06 x min(chain_count, 10)
 //   implied    = max(1, round(base x growthMult x maturity x chains))
 //
-// TVL is the anchor: a protocol holding more value is worth more if it ever issues a token.
-// Seven-day growth is momentum: a rising TVL earns a premium, a falling one a discount, and
-// the clamp keeps one wild week from deciding the board. Age is the record of how long the
-// protocol has run with no token: older means a longer track record and a larger accrued
-// user base to reward. Chain count is distribution: a protocol live on more chains reaches
-// more users and survives one chain's bad week. No protocol name is ever special-cased.
+// Size is compressed, not linear: the soft cap bends TVL so a protocol holding ten times
+// more value is worth about twice as much from size alone, and past $1B of TVL extra size
+// adds almost nothing. That is the point: the top of the board is decided by the other
+// three factors, not by who is biggest. Seven-day growth is momentum, and it now moves the
+// value much more than before: a protocol up 150% in a week is worth 2.35x its base, one
+// down 80% is worth 0.28x, and the clamp keeps one wild week from deciding the board on
+// its own. Age is the record of how long the protocol has run with no token: older means a
+// longer track record and a larger accrued user base to reward, from half value for a
+// newborn to full value at three years. Chain count is distribution: a protocol live on
+// more chains reaches more users and survives one chain's bad week, up to 1.6x for ten
+// chains. No protocol name is ever special-cased.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -50,6 +56,7 @@ export interface Snapshot {
 /** The model's constants, as the dashboard states them. */
 export interface ModelConstants {
   base_multiple: number;
+  tvl_soft_cap_usd: number;
   growth_weight: number;
   growth_floor: number;
   growth_cap: number;
@@ -63,19 +70,20 @@ export interface ModelConstants {
 
 export const MODEL: ModelConstants = {
   base_multiple: 0.25,
-  growth_weight: 0.5,
-  growth_floor: -60,
-  growth_cap: 120,
-  maturity_floor: 0.6,
-  maturity_range: 0.4,
+  tvl_soft_cap_usd: 1_000_000_000,
+  growth_weight: 0.9,
+  growth_floor: -80,
+  growth_cap: 150,
+  maturity_floor: 0.5,
+  maturity_range: 0.5,
   maturity_days: 1095,
   unknown_age_days: 365,
-  chain_step: 0.04,
+  chain_step: 0.06,
   chain_cap: 10,
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -105,6 +113,11 @@ export interface BoardRow {
   implied_value_usd: number;
   model: {
     base_multiple: number;
+    tvl_soft_cap_usd: number;
+    effective_tvl_usd: number;
+    base_value_usd: number;
+    after_growth_usd: number;
+    after_maturity_usd: number;
     growth_pct: number;
     growth_multiplier: number;
     maturity_multiplier: number;
@@ -183,22 +196,42 @@ export function ageDays(asOf: string, listedAt: string | null): number | null {
   return Math.max(0, Math.floor((a - b) / DAY_MS));
 }
 
-/** The four multipliers and the implied value one protocol gets under `model`. */
+/** The TVL after the soft cap: size compressed so a giant cannot decide the board alone. */
+export function effectiveTvl(tvlUsd: number, softCapUsd: number): number {
+  if (!(tvlUsd > 0) || !(softCapUsd > 0)) return Math.max(0, tvlUsd);
+  return tvlUsd / (1 + tvlUsd / softCapUsd);
+}
+
+/** The multipliers and the implied value one protocol gets under `model`, with every step of the arithmetic. */
 export function impliedValue(
   protocol: SnapshotProtocol,
   asOf: string,
   model: ModelConstants,
-): { implied: number; growthPct: number; growthMult: number; maturityMult: number; chainMult: number; age: number | null } {
+): {
+  implied: number;
+  effectiveTvl: number;
+  base: number;
+  afterGrowth: number;
+  afterMaturity: number;
+  growthPct: number;
+  growthMult: number;
+  maturityMult: number;
+  chainMult: number;
+  age: number | null;
+} {
   const age = ageDays(asOf, protocol.listed_at);
+  const effective = effectiveTvl(protocol.tvl_usd, model.tvl_soft_cap_usd);
+  const base = effective * model.base_multiple;
   const rawGrowth = finite(protocol.change_7d, 0);
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
   const growthMult = 1 + (growthPct / 100) * model.growth_weight;
   const ageForModel = age ?? model.unknown_age_days;
   const maturityMult = model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
   const chainMult = 1 + model.chain_step * Math.min(Math.max(protocol.chains.length, 0), model.chain_cap);
-  const base = protocol.tvl_usd * model.base_multiple;
-  const implied = Math.max(1, Math.round(base * growthMult * maturityMult * chainMult));
-  return { implied, growthPct, growthMult, maturityMult, chainMult, age };
+  const afterGrowth = base * growthMult;
+  const afterMaturity = afterGrowth * maturityMult;
+  const implied = Math.max(1, Math.round(afterMaturity * chainMult));
+  return { implied, effectiveTvl: effective, base, afterGrowth, afterMaturity, growthPct, growthMult, maturityMult, chainMult, age };
 }
 
 /** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
@@ -248,8 +281,8 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   }
 
   const scored = [...chosen.values()].map((p) => {
-    const { implied, growthPct, growthMult, maturityMult, chainMult, age } = impliedValue(p, snapshot.as_of, model);
-    return { p, implied, growthPct, growthMult, maturityMult, chainMult, age };
+    const v = impliedValue(p, snapshot.as_of, model);
+    return { p, ...v };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
   return scored.map((s, i) => ({
@@ -269,6 +302,11 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     implied_value_usd: s.implied,
     model: {
       base_multiple: model.base_multiple,
+      tvl_soft_cap_usd: model.tvl_soft_cap_usd,
+      effective_tvl_usd: Math.round(s.effectiveTvl),
+      base_value_usd: Math.round(s.base),
+      after_growth_usd: Math.round(s.afterGrowth),
+      after_maturity_usd: Math.round(s.afterMaturity),
       growth_pct: s.growthPct,
       growth_multiplier: round4(s.growthMult),
       maturity_multiplier: round4(s.maturityMult),
@@ -292,6 +330,11 @@ export function stepText(step: FarmStep): string {
 /** The first chain a protocol names, or a neutral phrase. */
 function chainOf(p: SnapshotProtocol): string {
   return p.chains.length > 0 ? p.chains[0]! : 'its main chain';
+}
+
+/** A protocol's second chain, or null when it lives on one chain only. */
+function secondChainOf(p: SnapshotProtocol): string | null {
+  return p.chains.length > 1 ? p.chains[1]! : null;
 }
 
 /** How much capital one farm position needs, from the protocol's own TVL. */
@@ -347,6 +390,8 @@ function actionFor(p: SnapshotProtocol, capital: number, chain: string): string 
   if (c.includes('stable')) return `Mint or deposit $${capital} of the stable asset through ${name} on ${chain} and hold it.`;
   if (c.includes('rwa')) return `Mint $${capital} of ${name}'s yield-bearing asset on ${chain} and hold it.`;
   if (c.includes('insurance')) return `Buy $${capital} of cover from ${name} on ${chain} and keep the policy active.`;
+  if (c.includes('btc')) return `Deposit $${capital} of BTC into ${name} on ${chain} and keep the position open.`;
+  if (c.includes('cedefi')) return `Deposit $${capital} of USDC into ${name}'s CeDeFi vault on ${chain} and hold the vault shares.`;
   if (c.includes('chain')) return `Bridge $${capital} of USDC to ${chain} through its official bridge and use it in one app on the chain.`;
   if (c.includes('payment')) return `Pay $${capital} through ${name} on ${chain} for a real purchase and keep the receipt.`;
   if (c.includes('governance')) return `Lock $${capital} of USDC in ${name}'s governance vault on ${chain} and vote once.`;
@@ -373,6 +418,8 @@ function secondActionFor(p: SnapshotProtocol, chain: string): string {
   if (c.includes('stable')) return `Swap a quarter of the stable asset back to USDC through ${name} and re-deposit it.`;
   if (c.includes('rwa')) return `Open ${name}'s points page and confirm the holding is counted before the next snapshot.`;
   if (c.includes('insurance')) return `Read ${name}'s cover terms and note the claim window and the exclusions.`;
+  if (c.includes('btc')) return `Check ${name}'s BTC custody page and confirm the deposit is counted before the next snapshot.`;
+  if (c.includes('cedefi')) return `Deposit $25 into a second ${name} vault on ${chain} and hold both vaults' shares.`;
   if (c.includes('chain')) return `Use one native app on ${chain} with the bridged funds and keep the transaction receipt.`;
   if (c.includes('payment')) return `Make a second small payment through ${name} on ${chain} a week later.`;
   if (c.includes('governance')) return `Vote on a second ${name} proposal and keep the voting receipt.`;
@@ -385,16 +432,21 @@ function secondActionFor(p: SnapshotProtocol, chain: string): string {
 }
 
 /**
- * A protocol's farm plan: six steps, each an action with a cost and a time. The plan is derived
- * from the protocol's own record (category, chains, TVL, age), never from a hand-written list
- * of names. Costs follow the chain's gas band; capital follows the TVL; the hold follows the age.
+ * A protocol's farm plan: eight or nine steps, each an action with a cost and a time. The plan
+ * is derived from the protocol's own record (category, chains, TVL, age), never from a
+ * hand-written list of names. Costs follow the chain's gas band; capital follows the TVL; the
+ * hold follows the age. A protocol on more than one chain gets an extra step that repeats the
+ * main action on its second chain, so the wallet is active in two places, not one. A risk
+ * check and a farm log are part of every plan: the first keeps the farmer on the protocol's
+ * own contracts, the second keeps the record a claim would need.
  */
 export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   const chain = chainOf(p);
+  const second = secondChainOf(p);
   const gas = gasBand(chain);
   const capital = capitalFor(p);
   const hold = holdDaysFor(age);
-  return [
+  const steps: FarmStep[] = [
     {
       text: `Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.`,
       cost: `under $3 of gas for the first transaction on ${chain}`,
@@ -410,6 +462,21 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
       cost: `about ${gas.tx}`,
       time: '10 minutes',
     },
+  ];
+  if (second !== null) {
+    const gas2 = gasBand(second);
+    steps.push({
+      text: `Repeat the main action on ${second} with $25, so the wallet is active on two chains instead of one.`,
+      cost: `$25 of capital and about ${gas2.tx}`,
+      time: '10 minutes',
+    });
+  }
+  steps.push(
+    {
+      text: `Read the protocol's own risk or audit page and confirm the contract you touch is the one it publishes; never interact with an address from a chat, a search ad, or a forwarded message.`,
+      cost: 'no fee to read',
+      time: '10 minutes',
+    },
     {
       text: `Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.`,
       cost: gas.weekly,
@@ -421,11 +488,17 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
       time: `${hold} days`,
     },
     {
+      text: `Write the wallet address, the entry date, and every transaction hash in a farm log, and check the log against the protocol's points page once a week.`,
+      cost: 'no fee to keep',
+      time: '5 minutes a week',
+    },
+    {
       text: `Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes, then write the wallet, the dates and every transaction in a farm log.`,
       cost: 'no fee to check, and never pay to claim',
       time: '15 minutes',
     },
-  ];
+  );
+  return steps;
 }
 
 /** The live-token protocols, by market cap, for the dashboard's Live token view. */
@@ -508,12 +581,15 @@ export function parseSnapshot(text: string): Snapshot {
   if (typeof o.floor_usd !== 'number' || !Number.isSafeInteger(o.floor_usd) || o.floor_usd <= 0) throw new SnapshotError('snapshot.json has no floor_usd');
   if (!Array.isArray(o.protocols)) throw new SnapshotError('snapshot.json has no protocols array');
   if (!Array.isArray(o.watchlist) || o.watchlist.some((s) => typeof s !== 'string')) throw new SnapshotError('snapshot.json has no watchlist of slugs');
+  const seen = new Set<string>();
   const protocols = o.protocols.map((v, i) => {
     if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new SnapshotError(`snapshot.json's protocol ${i} is not an object`);
     const p = v as Record<string, unknown>;
     if (typeof p.slug !== 'string' || typeof p.name !== 'string' || typeof p.tvl_usd !== 'number' || !Number.isFinite(p.tvl_usd)) {
       throw new SnapshotError(`snapshot.json's protocol ${i} lacks a slug, a name or a TVL`);
     }
+    if (seen.has(p.slug)) throw new SnapshotError(`snapshot.json repeats the slug ${p.slug}`);
+    seen.add(p.slug);
     return {
       slug: p.slug,
       name: p.name,
