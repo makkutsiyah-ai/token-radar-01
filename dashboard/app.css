@@ -46,6 +46,12 @@ button { cursor: pointer; }
 }
 .skip:focus { left: var(--step-4); top: var(--step-4); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.noscript {
+  max-width: 720px; margin: var(--step-7) auto; padding: var(--step-5);
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-panel);
+  color: var(--muted); line-height: 1.6;
+}
+.noscript b { color: var(--ink); }
 
 .shell { max-width: 1360px; margin: 0 auto; padding: var(--step-5) var(--step-6) var(--step-7); }
 .top {
@@ -121,6 +127,14 @@ tbody tr[data-selected="true"] { background: rgba(240, 178, 62, 0.1); }
 .equation > div { display: flex; justify-content: space-between; gap: var(--step-3); }
 .equation span { color: var(--muted); }
 .equation .total b { color: var(--accent); }
+/* The step-by-step arithmetic: each row is one turn of the model, the last one the
+   implied value itself. Values are right-aligned in the mono face so the column scans. */
+.breakdown { display: grid; gap: 0; font-family: var(--font-num); font-size: 13px; border: 1px solid var(--border); border-radius: var(--radius-control); overflow: hidden; }
+.break-row { display: flex; justify-content: space-between; align-items: baseline; gap: var(--step-3); padding: var(--step-2) var(--step-3); background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.break-row:last-child { border-bottom: 0; }
+.break-row span { color: var(--muted); font-family: var(--font-body); font-size: 12px; }
+.break-row.total { background: rgba(240, 178, 62, 0.1); }
+.break-row.total b { color: var(--accent); }
 .steps { margin: 0; padding-left: var(--step-5); display: grid; gap: var(--step-3); }
 .steps li { padding-left: var(--step-1); }
 .steps li::marker { color: var(--accent); font-family: var(--font-num); }

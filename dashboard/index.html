@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0a0f16">
 <title>Token Radar — pre-token protocols ranked by implied value</title>
 <meta name="description" content="A radar for protocol token launches: every pre-token protocol in the snapshot, ranked by an implied value computed from its own TVL, seven-day growth, age with no token, and chain count.">
 <link rel="stylesheet" href="app.css">
@@ -10,6 +11,14 @@
 <body>
 <a class="skip" href="#board">Skip to the board</a>
 <main id="board" tabindex="-1" aria-busy="true"></main>
+<noscript>
+  <div class="noscript">
+    <b>Token Radar needs JavaScript.</b>
+    The board, the model and every farm plan are rendered in this page from the snapshot
+    data beside it, so the page cannot show anything with scripting off. Turn JavaScript
+    on and reload to see the ranked board.
+  </div>
+</noscript>
 <script src="../data.js"></script>
 <script src="app.js"></script>
 </body>

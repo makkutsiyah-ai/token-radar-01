@@ -1,8 +1,8 @@
-// Token Radar's dashboard (radar-2). It reads window.RADAR (written beside dashboard/ by
+// Token Radar's dashboard (radar-3). It reads window.RADAR (written beside dashboard/ by
 // main.ts) and renders the ranked board, a filterable table, and a per-protocol detail panel
-// with the model's own inputs and the protocol's farm plan. No network: every byte it shows
-// is in data.js. The page recomputes each row from the snapshot figures, so the code and the
-// board's data are visibly the same arithmetic.
+// with the model's own inputs, the full step-by-step arithmetic, and the protocol's farm
+// plan. No network: every byte it shows is in data.js. The page recomputes each row from
+// the snapshot figures, so the code and the board's data are visibly the same arithmetic.
 (function () {
   'use strict';
 
@@ -31,25 +31,38 @@
     return (Math.round(n * 10000) / 10000).toFixed(2).replace(/0$/, '') + 'x';
   }
 
-  // The model in one function: the same four multipliers main.ts applies, from the same
-  // constants. TVL anchors the value, seven-day growth is momentum, age is how long the
-  // protocol has run with no token, and chain count is distribution.
-  function impliedOf(row, model) {
-    var growth = Math.min(model.growth_cap, Math.max(model.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
-    var growthMult = 1 + (growth / 100) * model.growth_weight;
-    var age = row.age_days === null || row.age_days === undefined ? model.unknown_age_days : row.age_days;
-    var maturity = model.maturity_floor + (Math.min(Math.max(age, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
-    var chains = 1 + model.chain_step * Math.min(row.chains ? row.chains.length : 0, model.chain_cap);
-    return Math.max(1, Math.round(row.tvl_usd * model.base_multiple * growthMult * maturity * chains));
+  // The model in three functions: the same radar-3 arithmetic main.ts applies, from the
+  // same constants. TVL is compressed by a $1B soft cap, so size alone cannot decide the
+  // board: past the cap, extra TVL adds almost nothing, and growth, age and chain breadth
+  // decide the order. Seven-day growth is momentum and now moves the value the most, from
+  // 0.28x for a week down 80% to 2.35x for a week up 150%. Age is how long the protocol
+  // has run with no token, from half value for a newborn to full value at three years.
+  // Chain count is distribution, up to 1.6x for ten chains.
+  function effectiveTvlOf(tvl, model) {
+    if (!(tvl > 0) || !(model.tvl_soft_cap_usd > 0)) return Math.max(0, tvl);
+    return tvl / (1 + tvl / model.tvl_soft_cap_usd);
   }
   function multipliersOf(row, model) {
     var growth = Math.min(model.growth_cap, Math.max(model.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
     var age = row.age_days === null || row.age_days === undefined ? model.unknown_age_days : row.age_days;
     return {
+      growthPct: growth,
       growth: 1 + (growth / 100) * model.growth_weight,
       maturity: model.maturity_floor + (Math.min(Math.max(age, 0), model.maturity_days) / model.maturity_days) * model.maturity_range,
       chains: 1 + model.chain_step * Math.min(row.chains ? row.chains.length : 0, model.chain_cap)
     };
+  }
+  function breakdownOf(row, model) {
+    var mults = multipliersOf(row, model);
+    var effective = effectiveTvlOf(row.tvl_usd, model);
+    var base = effective * model.base_multiple;
+    var afterGrowth = base * mults.growth;
+    var afterMaturity = afterGrowth * mults.maturity;
+    var implied = Math.max(1, Math.round(afterMaturity * mults.chains));
+    return { mults: mults, effective: effective, base: base, afterGrowth: afterGrowth, afterMaturity: afterMaturity, implied: implied };
+  }
+  function impliedOf(row, model) {
+    return breakdownOf(row, model).implied;
   }
 
   function el(tag, attrs) {
@@ -75,8 +88,11 @@
   // The farm plan is the same derivation main.ts writes to board.json: category, chains, TVL
   // and age decide the action, the capital, the hold and every cost and time. No name is
   // special-cased. Gas follows the chain: Ethereum mainnet is the expensive one, its
-  // layer-2s and the cheap layer-1s cost a fraction of it.
+  // layer-2s and the cheap layer-1s cost a fraction of it. A protocol on more than one chain
+  // gets an extra step on its second chain, and every plan carries a risk check and a farm
+  // log, so the wallet is active in two places and the record a claim would need exists.
   function chainOf(p) { return p.chains && p.chains.length > 0 ? p.chains[0] : 'its main chain'; }
+  function secondChainOf(p) { return p.chains && p.chains.length > 1 ? p.chains[1] : null; }
   function capitalFor(p) {
     if (p.tvl_usd >= 5e9) return 250;
     if (p.tvl_usd >= 1e9) return 150;
@@ -117,6 +133,8 @@
     if (c.indexOf('stable') >= 0) return 'Mint or deposit $' + capital + ' of the stable asset through ' + name + ' on ' + chain + ' and hold it.';
     if (c.indexOf('rwa') >= 0) return 'Mint $' + capital + " of " + name + "'s yield-bearing asset on " + chain + ' and hold it.';
     if (c.indexOf('insurance') >= 0) return 'Buy $' + capital + ' of cover from ' + name + ' on ' + chain + ' and keep the policy active.';
+    if (c.indexOf('btc') >= 0) return 'Deposit $' + capital + ' of BTC into ' + name + ' on ' + chain + ' and keep the position open.';
+    if (c.indexOf('cedefi') >= 0) return 'Deposit $' + capital + ' of USDC into ' + name + "'s CeDeFi vault on " + chain + ' and hold the vault shares.';
     if (c.indexOf('chain') >= 0) return 'Bridge $' + capital + ' of USDC to ' + chain + ' through its official bridge and use it in one app on the chain.';
     if (c.indexOf('payment') >= 0) return 'Pay $' + capital + ' through ' + name + ' on ' + chain + ' for a real purchase and keep the receipt.';
     if (c.indexOf('governance') >= 0) return 'Lock $' + capital + " of USDC in " + name + "'s governance vault on " + chain + ' and vote once.';
@@ -141,6 +159,8 @@
     if (c.indexOf('stable') >= 0) return 'Swap a quarter of the stable asset back to USDC through ' + name + ' and re-deposit it.';
     if (c.indexOf('rwa') >= 0) return "Open " + name + "'s points page and confirm the holding is counted before the next snapshot.";
     if (c.indexOf('insurance') >= 0) return 'Read ' + name + "'s cover terms and note the claim window and the exclusions.";
+    if (c.indexOf('btc') >= 0) return 'Check ' + name + "'s BTC custody page and confirm the deposit is counted before the next snapshot.";
+    if (c.indexOf('cedefi') >= 0) return 'Deposit $25 into a second ' + name + ' vault on ' + chain + " and hold both vaults' shares.";
     if (c.indexOf('chain') >= 0) return "Use one native app on " + chain + ' with the bridged funds and keep the transaction receipt.';
     if (c.indexOf('payment') >= 0) return 'Make a second small payment through ' + name + ' on ' + chain + ' a week later.';
     if (c.indexOf('governance') >= 0) return 'Vote on a second ' + name + ' proposal and keep the voting receipt.';
@@ -159,17 +179,27 @@
   }
   function farmSteps(p) {
     var chain = chainOf(p);
+    var second = secondChainOf(p);
     var gas = gasBand(chain);
     var capital = capitalFor(p);
     var hold = holdDaysFor(p.age_days);
-    return [
+    var steps = [
       { text: 'Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.', cost: 'under $3 of gas for the first transaction on ' + chain, time: '5 minutes' },
       { text: actionFor(p, capital, chain), cost: '$' + capital + ' of capital and about ' + gas.tx, time: '15 minutes to set up' },
-      { text: secondActionFor(p, chain), cost: 'about ' + gas.tx, time: '10 minutes' },
+      { text: secondActionFor(p, chain), cost: 'about ' + gas.tx, time: '10 minutes' }
+    ];
+    if (second) {
+      var gas2 = gasBand(second);
+      steps.push({ text: 'Repeat the main action on ' + second + ' with $25, so the wallet is active on two chains instead of one.', cost: '$25 of capital and about ' + gas2.tx, time: '10 minutes' });
+    }
+    steps.push(
+      { text: "Read the protocol's own risk or audit page and confirm the contract you touch is the one it publishes; never interact with an address from a chat, a search ad, or a forwarded message.", cost: 'no fee to read', time: '10 minutes' },
       { text: 'Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.', cost: gas.weekly, time: '10 minutes a week' },
       { text: 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot.', cost: 'the $' + capital + ' stays in the position', time: hold + ' days' },
+      { text: "Write the wallet address, the entry date, and every transaction hash in a farm log, and check the log against the protocol's points page once a week.", cost: 'no fee to keep', time: '5 minutes a week' },
       { text: "Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes, then write the wallet, the dates and every transaction in a farm log.", cost: 'no fee to check, and never pay to claim', time: '15 minutes' }
-    ].map(stepText);
+    );
+    return steps.map(stepText);
   }
 
   function readHash() {
@@ -242,7 +272,7 @@
           el('b', { text: '$' + Math.round(DATA.floor_usd / 1e6) + 'M' }),
           ' of TVL and no token on record. The early radar adds ',
           el('b', { text: String(DATA.early_size) }),
-          ' more pre-token protocols the watchlist leaves out, so the board is the whole pre-token universe in this snapshot. Implied value is a model, not a promise.'
+          ' more pre-token protocols the watchlist leaves out, so the board is the whole pre-token universe in this snapshot. Size alone cannot top this board: TVL is bent by a soft cap, so growth, age and chain breadth decide the order. Implied value is a model, not a promise.'
         )
       ),
       el('div', { class: 'facts' },
@@ -377,12 +407,13 @@
       el('h2', { text: 'How implied value is computed' }),
       el('p', { class: 'sub', text: 'Every row is scored by one function of the snapshot figures. No protocol name is special-cased, and no row is hand-picked.' }),
       el('div', { class: 'formula' },
-        'implied = round( tvl_usd x ', el('b', { text: String(m.base_multiple) }),
+        'effective = tvl_usd / (1 + tvl_usd / ', el('b', { text: '$' + (m.tvl_soft_cap_usd / 1e9) + 'B' }),
+        ');   implied = round( effective x ', el('b', { text: String(m.base_multiple) }),
         ' x (1 + clamp(change_7d, ', el('b', { text: String(m.growth_floor) }), ', ', el('b', { text: String(m.growth_cap) }), ') / 100 x ', el('b', { text: String(m.growth_weight) }),
         ') x (', el('b', { text: String(m.maturity_floor) }), ' + min(age_days, ', el('b', { text: String(m.maturity_days) }), ') / ', el('b', { text: String(m.maturity_days) }), ' x ', el('b', { text: String(m.maturity_range) }),
         ') x (1 + ', el('b', { text: String(m.chain_step) }), ' x min(chains, ', el('b', { text: String(m.chain_cap) }), ')) )'
       ),
-      el('p', { class: 'sub', text: 'TVL anchors the value. Seven-day growth is momentum, clamped so one wild week cannot decide the board. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days. Chain count is distribution: each chain up to ' + m.chain_cap + ' adds ' + (m.chain_step * 100) + '%. A protocol records no token; that is what its record says, never proof it has none. Implied value is this entry\u2019s own claim, not a prediction of whether or when a token is issued.' })
+      el('p', { class: 'sub', text: 'Size is compressed: the soft cap bends TVL so a protocol holding ten times more value is worth about twice as much from size alone, and past $1B of TVL extra size adds almost nothing. That is why the top of this board is not simply the biggest TVL. Seven-day growth is momentum and now moves the value the most, from 0.28x for a week down 80% to 2.35x for a week up 150%, clamped so one wild week cannot decide the board alone. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days. Chain count is distribution: each chain up to ' + m.chain_cap + ' adds ' + (m.chain_step * 100) + '%. A protocol records no token; that is what its record says, never proof it has none. Implied value is this entry\u2019s own claim, not a prediction of whether or when a token is issued.' })
     );
   }
 
@@ -390,8 +421,8 @@
     var row = null;
     for (var i = 0; i < DATA.rows.length; i++) { if (DATA.rows[i].slug === state.selected) { row = DATA.rows[i]; break; } }
     if (!row) return null;
-    var mults = multipliersOf(row, DATA.model);
-    var recomputed = impliedOf(row, DATA.model);
+    var bd = breakdownOf(row, DATA.model);
+    var recomputed = bd.implied;
     var steps = farmSteps(row);
     var panel = el('aside', { class: 'panel detail', 'aria-label': 'Protocol detail' });
     panel.appendChild(el('div', { class: 'detail-head' },
@@ -409,12 +440,38 @@
         el('div', null, el('span', { text: 'Seven-day growth' }), el('b', { class: 'num', text: fmtPct(row.change_7d) })),
         el('div', null, el('span', { text: 'Age with no token' }), el('b', { class: 'num', text: fmtAge(row.age_days) + (row.listed_at ? '  (since ' + row.listed_at + ')' : '') })),
         el('div', null, el('span', { text: 'Chains' }), el('b', { class: 'num', text: String(row.chains ? row.chains.length : 0) })),
-        el('div', null, el('span', { text: 'Growth multiplier' }), el('b', { class: 'num', text: fmtMult(mults.growth) })),
-        el('div', null, el('span', { text: 'Maturity multiplier' }), el('b', { class: 'num', text: fmtMult(mults.maturity) })),
-        el('div', null, el('span', { text: 'Chain multiplier' }), el('b', { class: 'num', text: fmtMult(mults.chains) })),
+        el('div', null, el('span', { text: 'Growth multiplier' }), el('b', { class: 'num', text: fmtMult(bd.mults.growth) })),
+        el('div', null, el('span', { text: 'Maturity multiplier' }), el('b', { class: 'num', text: fmtMult(bd.mults.maturity) })),
+        el('div', null, el('span', { text: 'Chain multiplier' }), el('b', { class: 'num', text: fmtMult(bd.mults.chains) })),
         el('div', { class: 'total' }, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
       ),
       el('p', { class: 'note', text: 'Model ' + DATA.model_version + ': the page recomputes this row as ' + fmtUsd(recomputed) + (recomputed === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' This is an estimate, not a price.' })
+    ));
+    panel.appendChild(el('section', { class: 'detail-section' },
+      el('h3', { text: 'The arithmetic, step by step' }),
+      el('div', { class: 'breakdown' },
+        el('div', { class: 'break-row' },
+          el('span', { text: 'TVL, compressed by the $1B soft cap' }),
+          el('b', { class: 'num', text: fmtUsd(row.tvl_usd) + '  →  ' + fmtUsd(bd.effective) })
+        ),
+        el('div', { class: 'break-row' },
+          el('span', { text: 'Base value (effective TVL x 0.25)' }),
+          el('b', { class: 'num', text: fmtUsd(bd.base) })
+        ),
+        el('div', { class: 'break-row' },
+          el('span', { text: 'After growth (x ' + fmtMult(bd.mults.growth) + ')' }),
+          el('b', { class: 'num', text: fmtUsd(bd.afterGrowth) })
+        ),
+        el('div', { class: 'break-row' },
+          el('span', { text: 'After maturity (x ' + fmtMult(bd.mults.maturity) + ')' }),
+          el('b', { class: 'num', text: fmtUsd(bd.afterMaturity) })
+        ),
+        el('div', { class: 'break-row total' },
+          el('span', { text: 'After chains (x ' + fmtMult(bd.mults.chains) + ')' }),
+          el('b', { class: 'num', text: fmtUsd(bd.implied) })
+        )
+      ),
+      el('p', { class: 'note', text: 'Read it top to bottom: size is bent first, then momentum, age and breadth are applied in turn. A protocol can outrank a bigger one when its week was stronger or it runs on more chains.' })
     ));
     panel.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Farm plan' }),
